@@ -25,38 +25,46 @@ Given eight possible crash values, five possible pre/post change values, and a
 24 month test duration, 4457 models would be generated.
 """
 
+import sys
+
 initial_market = 4000
 dca_intervals = 24
 all_investment = 1000000
 dca_investment = all_investment / dca_intervals
 
 dividends = 0.0175 / 12
-changes = [-0.12, -0.05, 0, 0.05, 0.12]
+annualized_return = [-0.12, -0.05, 0, 0.05, 0.12]
+monthly_return = [pow(1 + i, 1/12) - 1 for i in annualized_return]
 crashes = [0, -0.2, -0.25, -0.3, -0.35, -0.4, -0.45, -0.5]
-plateaus = [_ for _ in crashes if _ in changes]
+plateaus = [_ for _ in crashes if _ in monthly_return]
 
-"""
-If the changes and crashes list overlap by more than one element, the logic to
-sort out duplication gets too complex. Too much overlap is also a sign that the
-modeling is not sufficiently well thought out.
-"""
-if len(plateaus) > 1:
-    print("ERROR: changes and crashes list overlap by more than one value!")
-    exit(1)
+def validate() -> None:
+    """
+    If the changes and crashes list overlap by more than one element, the logic
+    to sort out duplication gets too complex. Too much overlap is also a sign
+    that the modeling is not sufficiently well thought out.
+    """
+    if len(plateaus) > 1:
+        print("ERROR: changes and crashes list overlap by more than one value!")
+        exit(1)
 
-num_models = dca_intervals * (len(changes) * len(crashes) * len(changes)) \
-                - 2 * (len(changes) * len(crashes) * len(changes) - len(changes) * len(crashes)) \
+def calc_num_models() -> int:
+    return dca_intervals * (len(monthly_return) * len(crashes) * len(monthly_return)) \
+                - 2 * (len(monthly_return) * len(crashes) * len(monthly_return) - len(monthly_return) * len(crashes)) \
                 - 3 * len(crashes) \
                 + 1
 
-#print("Testing %i models." % num_models)
-
 def eval_model(market_model) -> list():
+    """
+    Month 0 does not involve a DRIP. Subsequent months apply the DRIP first and
+    then purchase shares at the new market rate.
+    """
     market = initial_market + initial_market * market_model[0]
     all_shares = all_investment / market
     dca_shares = dca_investment / market
 
-    #print("0, all_shares -> %f, dca_shares -> %f" % (all_shares, dca_shares))
+    #print(market_model)
+    #print("month ->  0, market -> %f, change -> %f, all_shares -> %f, dca_shares -> %f" % (market, market_model[0], all_shares, dca_shares))
 
     for month in range(1, dca_intervals):
         market = market + market * market_model[month]
@@ -70,50 +78,36 @@ def eval_model(market_model) -> list():
 
         all_shares = all_shares + all_drip_shares
         dca_shares = dca_shares + dca_drip_shares + dca_new_shares
-        #print("%i, all_shares -> %f, dca_shares -> %f" % (month, all_shares, dca_shares))
+        #print("month -> %2i, market -> %f, change -> %f, all_shares -> %f, dca_shares -> %f" % (month, market, market_model[month], all_shares, dca_shares))
 
-    if all_shares >= dca_shares:
-        print("all")
-    else:
-        print("dca")
+    return [all_shares, dca_shares]
 
-test_model = [0] * 24
-plateau_set = set()
-for crash_month in range(0, dca_intervals):
-    for crash in crashes:
+def get_crash_models() -> list():
+    models = []
+    test_model = [0] * dca_intervals
+    plateau_set = set()
+    for crash_month in range(0, dca_intervals):
+        for crash in crashes:
 
-        # We only have post crash months if the crash happened at month 0.
-        if crash_month == 0:
-            for post_crash in changes:
-                if post_crash == crash:
-                    plateau_set.add(post_crash)
-                    continue
+            # Only post crash months if the crash happened at month zero.
+            if crash_month == 0:
+                for post_crash in monthly_return:
+                    if post_crash == crash:
+                        plateau_set.add(post_crash)
+                        continue
 
-                test_model[crash_month] = crash
+                    test_model[crash_month] = crash
 
-                for post_crash_month in range(crash_month + 1, dca_intervals):
-                    test_model[post_crash_month] = post_crash
+                    for post_crash_month in range(crash_month + 1, dca_intervals):
+                        test_model[post_crash_month] = post_crash
 
-                eval_model(test_model)
+                    models.append(list(test_model))
 
-        # We only have pre crash months if the crash happened in the last month.
-        elif crash_month == dca_intervals - 1:
-            for pre_crash in changes:
-                if pre_crash == crash:
-                    plateau_set.add(pre_crash)
-                    continue
-
-                for pre_crash_month in range(0, crash_month):
-                    test_model[pre_crash_month] = pre_crash
-
-                test_model[crash_month] = crash
-
-                eval_model(test_model)
-        else:
-            for pre_crash in changes:
-                for post_crash in changes:
-                    if pre_crash == crash and post_crash == crash:
-                        plateau_set.add(crash)
+            # Only pre crash months if the crash happened in the last month.
+            elif crash_month == dca_intervals - 1:
+                for pre_crash in monthly_return:
+                    if pre_crash == crash:
+                        plateau_set.add(pre_crash)
                         continue
 
                     for pre_crash_month in range(0, crash_month):
@@ -121,15 +115,56 @@ for crash_month in range(0, dca_intervals):
 
                     test_model[crash_month] = crash
 
-                    for post_crash_month in range(crash_month + 1, dca_intervals):
-                        test_model[post_crash_month] = post_crash
+                    models.append(list(test_model))
+            
+            # Pre and post crash months happen most of the time.
+            else:
+                for pre_crash in monthly_return:
+                    for post_crash in monthly_return:
+                        if pre_crash == crash and post_crash == crash:
+                            plateau_set.add(crash)
+                            continue
 
-                    eval_model(test_model)
+                        for pre_crash_month in range(0, crash_month):
+                            test_model[pre_crash_month] = pre_crash
 
-# Whenver the change list and the crash list contain the same value, a plateau
-# model is created. This model ends up being duplicated 3 * len(crashes) times
-# unless we skip plateaus in earlier processing and defer them to the end.
-for plateau in plateau_set:
-    for month in range(0, dca_intervals):
-        test_model[month] = plateau
-    eval_model(test_model)
+                        test_model[crash_month] = crash
+
+                        for post_crash_month in range(crash_month + 1, dca_intervals):
+                            test_model[post_crash_month] = post_crash
+
+                        models.append(list(test_model))
+
+    # Whenver the change list and the crash list contain the same value, a
+    # plateau model is created. This model ends up being duplicated
+    # 3 * len(crashes) times unless we skip plateaus in earlier processing and
+    # defer them to the end.
+    for plateau in plateau_set:
+        for month in range(0, dca_intervals):
+            test_model[month] = plateau
+        models.append(list(test_model))
+
+    return models
+
+def main() -> int:
+    validate()
+
+    num_all = 0
+    num_dca = 0
+    num_tie = 0
+    total = 0
+    for model in get_crash_models():
+        total = total + 1
+        all, dca = eval_model(model)
+        if all > dca:
+            num_all = num_all + 1
+        elif dca > all:
+            num_dca = num_dca + 1
+        else:
+            num_tie = num_tie + 1
+        #print("%f, %f" %(all, dca))
+
+    print("Total: %i, All-in: %i, DCA: %i, Tie: %i" % (total, num_all, num_dca, num_tie))
+
+if __name__ == '__main__':
+    sys.exit(main())
